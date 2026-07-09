@@ -186,13 +186,14 @@ _grpcurl_referenced_types() {
 }
 
 # Registered with `complete -o nospace` so bash never auto-appends a trailing
-# space -- we add it ourselves, except after a partial dot-segment (ends in '.'),
-# so the user can keep tabbing through 'contoso.' -> 'contoso.MyService' without
-# having to backspace over an unwanted space first.
+# space -- we add it ourselves, except after a partial dot-segment or a service
+# name offered in slash form (ends in '.' or '/'), so the user can keep tabbing
+# through 'contoso.' -> 'contoso.MyService/' -> its methods without having to
+# backspace over an unwanted space first.
 _grpcurl_finish() {
     local e
     for e in "$@"; do
-        if [[ $e == *. ]]; then
+        if [[ $e == *[./] ]]; then
             COMPREPLY+=("$e")
         else
             COMPREPLY+=("$e ")
@@ -320,8 +321,15 @@ _grpcurl_complete() {
         narrow_candidates=("${combined[@]}")
     fi
 
+    # A full leaf match that names an actual service (as opposed to a describe-only
+    # message/enum type) has methods worth tabbing into next -- offer it in slash
+    # form ('ReaderService/') instead of a bare name, so the very next Tab lists
+    # its methods instead of starting a new (nonsensical) word.
+    local -A is_service=()
+    for svc in "${services[@]}"; do is_service[$svc]=1; done
+
     # Otherwise, narrow the package/service hierarchy one dot-segment at a time,
-    # e.g. 'pr' -> 'contoso.', 'contoso.e' -> 'contoso.MyService'.
+    # e.g. 'pr' -> 'contoso.', 'contoso.e' -> 'contoso.MyService/'.
     local -A segments=()
     local dot_index segment cur_len=${#cur}
     for svc in "${narrow_candidates[@]}"; do
@@ -331,6 +339,8 @@ _grpcurl_complete() {
         if [[ $tail == *"."* ]]; then
             local after_dot=${tail#*.}
             segment=${svc:0:$((cur_len + ${#tail} - ${#after_dot}))}
+        elif [[ -n ${is_service[$svc]+x} ]]; then
+            segment="$svc/"
         else
             segment=$svc
         fi

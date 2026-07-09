@@ -72,7 +72,7 @@ assert $([[ $REPLY_JOINED == 'contoso.' ]]; echo $?) "'co' should narrow to the 
 assert $([[ ${COMPREPLY[0]} == 'contoso.' ]]; echo $?) "narrowed segment 'contoso.' must not have a trailing space"
 
 get_completion 'grpcurl -plaintext $myserver contoso.m'
-assert $([[ $REPLY_JOINED == 'contoso.MyService ' ]]; echo $?) "'contoso.m' (case-insensitive) should complete to the leaf 'contoso.MyService', with a trailing space (it's a full name, not a partial segment)"
+assert $([[ $REPLY_JOINED == 'contoso.MyService/' ]]; echo $?) "'contoso.m' (case-insensitive) should complete to the leaf 'contoso.MyService/' -- slash form, no trailing space, so the next Tab lists its methods instead of starting a bogus new word"
 
 get_completion 'grpcurl -plaintext $myserver contoso.MyService'
 found_hello=0 found_goodbye=0
