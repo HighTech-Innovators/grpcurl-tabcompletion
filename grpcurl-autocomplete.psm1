@@ -348,7 +348,7 @@ function Get-GrpcurlCompletion {
     }
 
     # Otherwise, narrow the package/service hierarchy one dot-segment at a time,
-    # e.g. 'pr' -> 'pricer.', 'pricer.e' -> 'pricer.EvoService'.
+    # e.g. 'pr' -> 'contoso.', 'contoso.e' -> 'contoso.myservice'.
     $segments = [ordered]@{}
     foreach ($svc in $narrowCandidates) {
         if ($svc.Length -le $current.Length) { continue }

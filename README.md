@@ -8,10 +8,10 @@ narrows package-qualified service/method names one dot-segment at a time:
 
 ```powershell
 $myserver = 'localhost:50051'
-grpcurl -plaintext $myserver <Tab>                     # narrows one package segment at a time: 'pr' -> 'pricer.'
-grpcurl -plaintext $myserver pricer.EvoService<Tab>     # once a full service name matches, lists its methods
-grpcurl -plaintext $myserver pricer.EvoService.Say<Tab> # narrows methods in dot form (service.Method), same as
-grpcurl -plaintext $myserver pricer.EvoService/Say<Tab> # ... slash form (service/Method) -- grpcurl accepts both
+grpcurl -plaintext $myserver <Tab>                     # narrows one package segment at a time: 'co' -> 'contoso.'
+grpcurl -plaintext $myserver contoso.myservice<Tab>     # once a full service name matches, lists its methods
+grpcurl -plaintext $myserver contoso.myservice.Say<Tab> # narrows methods in dot form (service.Method), same as
+grpcurl -plaintext $myserver contoso.myservice/Say<Tab> # ... slash form (service/Method) -- grpcurl accepts both
 grpcurl -H "Authorization: $env:myToken" -plaintext $myserver <Tab>
 ```
 
@@ -22,7 +22,7 @@ Requires PowerShell 7+ and `grpcurl` on `PATH`.
 Add to your `$PROFILE`:
 
 ```powershell
-Import-Module "S:\Hightech\oss\grpcurl-autocomplete\grpcurl-autocomplete.psd1"
+Import-Module "S:\oss\grpcurl-autocomplete\grpcurl-autocomplete.psd1"
 ```
 
 ## Tests
