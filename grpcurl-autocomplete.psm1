@@ -40,7 +40,7 @@ $script:GrpcurlFlags = @{
     '-vv'                         = $false
 }
 
-# ponytail: 15s TTL, no eviction -- add LRU only if used against dozens of distinct addresses in one session
+# ponytail: 300s TTL, no eviction -- add LRU only if used against dozens of distinct addresses in one session
 $script:ListCache = @{}
 
 function Resolve-GrpcurlVariable {
@@ -100,7 +100,7 @@ function Invoke-GrpcurlList {
 
     $cacheKey = "$($argv -join '|')"
     $cached = $script:ListCache[$cacheKey]
-    if ($cached -and ([DateTime]::UtcNow - $cached.Time).TotalSeconds -lt 15) {
+    if ($cached -and ([DateTime]::UtcNow - $cached.Time).TotalSeconds -lt 300) {
         return $cached.Items
     }
 
@@ -132,6 +132,88 @@ function Invoke-GrpcurlList {
 
     $script:ListCache[$cacheKey] = @{ Time = [DateTime]::UtcNow; Items = $result }
     return $result
+}
+
+# Matches a full 'rpc Name ( [stream] .Type ) returns ( [stream] .Type )' header line from
+# `describe <service>` output. Scalar types (string, int32, ...) have no leading dot and
+# never match; unrelated leading-dot tokens on other lines (e.g. option annotations like
+# .google.api.http) are excluded because the whole line must match. The header ends with
+# ';' for an option-less rpc, or '{' when an option block follows (very common -- most
+# REST-mapped services annotate every method with google.api.http) -- both must match.
+$script:GrpcurlRpcTypePattern = '^rpc\s+\S+\s*\(\s*(?:stream\s+)?(\.\S+?)\s*\)\s*returns\s*\(\s*(?:stream\s+)?(\.\S+?)\s*\)\s*(?:;|\{)\s*$'
+
+function Get-GrpcurlReferencedTypes {
+    param(
+        [string[]]$ConnectionArgs,
+        [string[]]$Services
+    )
+
+    # Describing every known service is inherently N process spawns (grpcurl has no
+    # "describe everything" mode) -- run them concurrently instead of one at a time, or
+    # this crawl's wall-clock time is O(services), which is unusably slow past a handful.
+    $pending = [System.Collections.Generic.List[object]]::new()
+    $results = @{}
+
+    foreach ($svc in $Services) {
+        $argv = @($ConnectionArgs) + @('describe', $svc)
+        $cacheKey = "$($argv -join '|')"
+        $cached = $script:ListCache[$cacheKey]
+        if ($cached -and ([DateTime]::UtcNow - $cached.Time).TotalSeconds -lt 300) {
+            $results[$svc] = $cached.Items
+            continue
+        }
+
+        try {
+            $psi = [System.Diagnostics.ProcessStartInfo]::new('grpcurl')
+            foreach ($a in $argv) { $psi.ArgumentList.Add($a) }
+            $psi.RedirectStandardOutput = $true
+            $psi.RedirectStandardError = $true
+            $psi.UseShellExecute = $false
+
+            $proc = [System.Diagnostics.Process]::new()
+            $proc.StartInfo = $psi
+            [void]$proc.Start()
+            $pending.Add([pscustomobject]@{
+                Service  = $svc
+                CacheKey = $cacheKey
+                Process  = $proc
+                Stdout   = $proc.StandardOutput.ReadToEndAsync()
+                Stderr   = $proc.StandardError.ReadToEndAsync()
+            })
+        } catch {
+            $results[$svc] = @()
+        }
+    }
+
+    # Shared deadline, not one timeout per process -- since they all started together,
+    # total wall time is bounded by ~2s regardless of how many services are pending.
+    $deadline = [DateTime]::UtcNow.AddMilliseconds(2000)
+    foreach ($p in $pending) {
+        $remaining = [Math]::Max(0, [int]($deadline - [DateTime]::UtcNow).TotalMilliseconds)
+        $items = @()
+        try {
+            if ($p.Process.WaitForExit($remaining)) {
+                if ($p.Process.ExitCode -eq 0) {
+                    $items = $p.Stdout.Result -split "`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+                }
+            } else {
+                try { $p.Process.Kill() } catch {}
+            }
+        } catch {}
+        $script:ListCache[$p.CacheKey] = @{ Time = [DateTime]::UtcNow; Items = $items }
+        $results[$p.Service] = $items
+    }
+
+    $types = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($svc in $Services) {
+        foreach ($line in $results[$svc]) {
+            if ($line -match $script:GrpcurlRpcTypePattern) {
+                [void]$types.Add($Matches[1].TrimStart('.'))
+                [void]$types.Add($Matches[2].TrimStart('.'))
+            }
+        }
+    }
+    return @($types)
 }
 
 function Get-GrpcurlCompletion {
@@ -256,10 +338,19 @@ function Get-GrpcurlCompletion {
             })
     }
 
+    # Under 'describe', standalone message/enum types are valid completion targets too --
+    # discover them from each known service's own RPC signatures (one hop only: the
+    # request/response types of that service's methods, not recursively into their fields).
+    $narrowCandidates = $services
+    if ($verb -ieq 'describe') {
+        $discoveredTypes = Get-GrpcurlReferencedTypes -ConnectionArgs $connectionArgs -Services $services
+        $narrowCandidates = @($services + $discoveredTypes | Select-Object -Unique)
+    }
+
     # Otherwise, narrow the package/service hierarchy one dot-segment at a time,
     # e.g. 'pr' -> 'pricer.', 'pricer.e' -> 'pricer.EvoService'.
     $segments = [ordered]@{}
-    foreach ($svc in $services) {
+    foreach ($svc in $narrowCandidates) {
         if ($svc.Length -le $current.Length) { continue }
         if (-not $svc.StartsWith($current, [StringComparison]::OrdinalIgnoreCase)) { continue }
         $dotIndex = $svc.IndexOf('.', $current.Length)

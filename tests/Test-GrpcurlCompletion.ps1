@@ -94,6 +94,58 @@ $r = Get-Completion 'grpcurl -plaintext $myserver list pr'
 Assert (-not ($r.CompletionText -contains 'list')) "'list'/'describe' should not be re-offered once a verb is already typed"
 Assert (@($r.CompletionText) -join ',' -eq 'pricer.') "symbol narrowing after an explicit verb should still work"
 
+# 'describe' also discovers standalone message/enum types (not just services), via each
+# known service's own rpc signatures. Seed 'describe' cache entries so no live server is needed.
+& (Get-Module grpcurl-autocomplete) {
+    $script:ListCache['-plaintext|localhost:9999|describe|pricer.EvoService'] = @{
+        Time  = [DateTime]::UtcNow
+        Items = @(
+            'pricer.EvoService is a service:',
+            'service EvoService {',
+            'rpc SayHello ( .pricer.evo.dtoflow.type.BatchReadDtosRequest ) returns ( .pricer.evo.dtoflow.type.BatchReadDtosResponse );',
+            'rpc SayGoodbye ( .pricer.EvoService.Empty ) returns ( .pricer.EvoService.Empty );',
+            # a method with a google.api.http-style option block ends its header in '{', not ';' --
+            # real-world REST-mapped services annotate nearly every method this way.
+            'rpc Read ( .pricer.evo.dtoflow.type.ReadDtoRequest ) returns ( .pricer.evo.dtos.canvasdesign.v1.Canvasdesign ) {',
+            '  option (.google.api.http) = { get: "/canvasdesign.v1/{id=**}" };',
+            '}',
+            '}'
+        )
+    }
+    $script:ListCache['-plaintext|localhost:9999|describe|pricer.FooService'] = @{
+        Time  = [DateTime]::UtcNow
+        Items = @('pricer.FooService is a service:', 'service FooService {', '}')
+    }
+    $script:ListCache['-plaintext|localhost:9999|describe|grpcbin.GRPCBin'] = @{
+        Time  = [DateTime]::UtcNow
+        Items = @('grpcbin.GRPCBin is a service:', 'service GRPCBin {', '}')
+    }
+}
+
+# 'pricer.evo.' matches no real service (case-insensitively 'pricer.evo' alone would also
+# match the 'EvoService' name itself) -- only reachable via the discovered request type,
+# proving discovery + wiring works and is gated on the 'describe' verb.
+$r = Get-Completion 'grpcurl -plaintext $myserver describe pricer.evo.'
+Assert (@($r.CompletionText) -join ',' -eq 'pricer.evo.dtoflow.,pricer.evo.dtos.') "'describe pricer.evo.' should narrow into both discovered-type package segments sharing that prefix"
+
+# a method annotated with an option block (header ends in '{') must still contribute its
+# response type -- this was the actual bug: such lines silently failed to match before.
+$r = Get-Completion 'grpcurl -plaintext $myserver describe pricer.evo.dtos.'
+Assert (@($r.CompletionText) -join ',' -eq 'pricer.evo.dtos.canvasdesign.') "response type of an option-annotated rpc (header ending in '{') should still be discovered"
+
+$r = Get-Completion 'grpcurl -plaintext $myserver list pr'
+Assert (@($r.CompletionText) -join ',' -eq 'pricer.') "'list pr' should still narrow to the service segment only, ignoring describe-only types"
+
+$r = Get-Completion 'grpcurl -plaintext $myserver pr'
+Assert (@($r.CompletionText) -join ',' -eq 'pricer.') "no-verb 'pr' should still narrow to the service segment only, ignoring describe-only types"
+
+# An exact type match must not attempt a bogus method-list call against a message type --
+# every describe/list call needed was already seeded above, so no new cache keys should appear.
+$keysBefore = & (Get-Module grpcurl-autocomplete) { @($script:ListCache.Keys) }
+Get-Completion 'grpcurl -plaintext $myserver describe pricer.evo.dtoflow.type.BatchReadDtosRequest' | Out-Null
+$keysAfter = & (Get-Module grpcurl-autocomplete) { @($script:ListCache.Keys) }
+Assert ((($keysAfter | Sort-Object) -join ',') -eq (($keysBefore | Sort-Object) -join ',')) "exact type match should add no new cache entries (no bogus list/describe call on a message type)"
+
 # Invoke-GrpcurlList against a refusing port returns @() within timeout, does not throw
 & (Get-Module grpcurl-autocomplete) {
     $result = Invoke-GrpcurlList -ConnectionArgs @('-plaintext', '127.0.0.1:1') -Service $null
