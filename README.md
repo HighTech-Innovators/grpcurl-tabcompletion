@@ -15,18 +15,40 @@ grpcurl -plaintext $myserver contoso.myservice/Say<Tab> # ... slash form (servic
 grpcurl -H "Authorization: $env:myToken" -plaintext $myserver <Tab>
 ```
 
-## Setup
+Both a PowerShell and a bash version are included, with feature parity between them.
+
+## PowerShell setup
 
 Requires PowerShell 7+ and `grpcurl` on `PATH`.
 
 Add to your `$PROFILE`:
 
 ```powershell
-Import-Module "S:\oss\grpcurl-autocomplete\grpcurl-autocomplete.psd1"
+Import-Module "/path/to/grpcurl-autocomplete/grpcurl-autocomplete.psd1"
 ```
 
-## Tests
+### PowerShell tests
 
 ```powershell
 pwsh ./tests/Test-GrpcurlCompletion.ps1
+```
+
+## Bash setup
+
+Requires bash 4+ (associative arrays) and `grpcurl` on `PATH`.
+
+Add to your `.bashrc`:
+
+```bash
+source "/path/to/grpcurl-autocomplete/grpcurl-autocomplete.bash"
+```
+
+Bash has one variable namespace, so `$VAR` in the command line covers both plain
+variables and exported environment variables -- there's no separate `$env:VAR` form
+to write, unlike PowerShell.
+
+### Bash tests
+
+```bash
+bash tests/test-grpcurl-completion.bash
 ```

@@ -57,29 +57,29 @@ Assert (($null -eq $r) -or ($r.Count -eq 0)) "unresolvable address (subexpressio
 & (Get-Module grpcurl-autocomplete) {
     $script:ListCache['-plaintext|localhost:9999|list'] = @{
         Time  = [DateTime]::UtcNow
-        Items = @('pricer.EvoService', 'pricer.FooService', 'grpcbin.GRPCBin')
+        Items = @('contoso.MyService', 'contoso.OtherService', 'grpcbin.GRPCBin')
     }
-    $script:ListCache['-plaintext|localhost:9999|list|pricer.EvoService'] = @{
+    $script:ListCache['-plaintext|localhost:9999|list|contoso.MyService'] = @{
         Time  = [DateTime]::UtcNow
-        Items = @('pricer.EvoService.SayHello', 'pricer.EvoService.SayGoodbye')
+        Items = @('contoso.MyService.SayHello', 'contoso.MyService.SayGoodbye')
     }
 }
 
-$r = Get-Completion 'grpcurl -plaintext $myserver pr'
-Assert (@($r.CompletionText) -join ',' -eq 'pricer.') "'pr' should narrow to the single shared segment 'pricer.'"
+$r = Get-Completion 'grpcurl -plaintext $myserver co'
+Assert (@($r.CompletionText) -join ',' -eq 'contoso.') "'co' should narrow to the single shared segment 'contoso.'"
 
-$r = Get-Completion 'grpcurl -plaintext $myserver pricer.e'
-Assert (@($r.CompletionText) -join ',' -eq 'pricer.EvoService') "'pricer.e' (case-insensitive) should complete to the leaf 'pricer.EvoService'"
+$r = Get-Completion 'grpcurl -plaintext $myserver contoso.m'
+Assert (@($r.CompletionText) -join ',' -eq 'contoso.MyService') "'contoso.m' (case-insensitive) should complete to the leaf 'contoso.MyService'"
 
-$r = Get-Completion 'grpcurl -plaintext $myserver pricer.EvoService'
-Assert ($r.CompletionText -contains 'pricer.EvoService.SayHello') "exact service match should auto-continue into dot-form methods"
-Assert ($r.CompletionText -contains 'pricer.EvoService.SayGoodbye') "exact service match should list all methods when no method prefix given"
+$r = Get-Completion 'grpcurl -plaintext $myserver contoso.MyService'
+Assert ($r.CompletionText -contains 'contoso.MyService.SayHello') "exact service match should auto-continue into dot-form methods"
+Assert ($r.CompletionText -contains 'contoso.MyService.SayGoodbye') "exact service match should list all methods when no method prefix given"
 
-$r = Get-Completion 'grpcurl -plaintext $myserver pricer.evoservice.sayh'
-Assert (@($r.CompletionText) -join ',' -eq 'pricer.EvoService.SayHello') "dot-form method typing (case-insensitive) should narrow to the matching method, using real casing"
+$r = Get-Completion 'grpcurl -plaintext $myserver contoso.myservice.sayh'
+Assert (@($r.CompletionText) -join ',' -eq 'contoso.MyService.SayHello') "dot-form method typing (case-insensitive) should narrow to the matching method, using real casing"
 
-$r = Get-Completion 'grpcurl -plaintext $myserver pricer.EvoService/'
-Assert ($r.CompletionText -contains 'pricer.EvoService/SayHello') "explicit slash-typed method completion should still work"
+$r = Get-Completion 'grpcurl -plaintext $myserver contoso.MyService/'
+Assert ($r.CompletionText -contains 'contoso.MyService/SayHello') "explicit slash-typed method completion should still work"
 
 # 'list' and 'describe' verbs are offered in the slot right after the address
 $r = Get-Completion 'grpcurl -plaintext $myserver '
@@ -90,31 +90,31 @@ $r = Get-Completion 'grpcurl -plaintext $myserver l'
 Assert (@($r.CompletionText) -join ',' -eq 'list') "'l' should narrow verb completion to 'list' only"
 
 # once a verb is already typed, 'list'/'describe' should not be re-offered for the symbol slot
-$r = Get-Completion 'grpcurl -plaintext $myserver list pr'
+$r = Get-Completion 'grpcurl -plaintext $myserver list co'
 Assert (-not ($r.CompletionText -contains 'list')) "'list'/'describe' should not be re-offered once a verb is already typed"
-Assert (@($r.CompletionText) -join ',' -eq 'pricer.') "symbol narrowing after an explicit verb should still work"
+Assert (@($r.CompletionText) -join ',' -eq 'contoso.') "symbol narrowing after an explicit verb should still work"
 
 # 'describe' also discovers standalone message/enum types (not just services), via each
 # known service's own rpc signatures. Seed 'describe' cache entries so no live server is needed.
 & (Get-Module grpcurl-autocomplete) {
-    $script:ListCache['-plaintext|localhost:9999|describe|pricer.EvoService'] = @{
+    $script:ListCache['-plaintext|localhost:9999|describe|contoso.MyService'] = @{
         Time  = [DateTime]::UtcNow
         Items = @(
-            'pricer.EvoService is a service:',
-            'service EvoService {',
-            'rpc SayHello ( .pricer.evo.dtoflow.type.BatchReadDtosRequest ) returns ( .pricer.evo.dtoflow.type.BatchReadDtosResponse );',
-            'rpc SayGoodbye ( .pricer.EvoService.Empty ) returns ( .pricer.EvoService.Empty );',
+            'contoso.MyService is a service:',
+            'service MyService {',
+            'rpc SayHello ( .contoso.my.reqtypes.type.BatchReadItemsRequest ) returns ( .contoso.my.reqtypes.type.BatchReadItemsResponse );',
+            'rpc SayGoodbye ( .contoso.MyService.Empty ) returns ( .contoso.MyService.Empty );',
             # a method with a google.api.http-style option block ends its header in '{', not ';' --
             # real-world REST-mapped services annotate nearly every method this way.
-            'rpc Read ( .pricer.evo.dtoflow.type.ReadDtoRequest ) returns ( .pricer.evo.dtos.canvasdesign.v1.Canvasdesign ) {',
-            '  option (.google.api.http) = { get: "/canvasdesign.v1/{id=**}" };',
+            'rpc Read ( .contoso.my.reqtypes.type.ReadItemRequest ) returns ( .contoso.my.restypes.widget.v1.Widget ) {',
+            '  option (.google.api.http) = { get: "/widget.v1/{id=**}" };',
             '}',
             '}'
         )
     }
-    $script:ListCache['-plaintext|localhost:9999|describe|pricer.FooService'] = @{
+    $script:ListCache['-plaintext|localhost:9999|describe|contoso.OtherService'] = @{
         Time  = [DateTime]::UtcNow
-        Items = @('pricer.FooService is a service:', 'service FooService {', '}')
+        Items = @('contoso.OtherService is a service:', 'service OtherService {', '}')
     }
     $script:ListCache['-plaintext|localhost:9999|describe|grpcbin.GRPCBin'] = @{
         Time  = [DateTime]::UtcNow
@@ -122,27 +122,27 @@ Assert (@($r.CompletionText) -join ',' -eq 'pricer.') "symbol narrowing after an
     }
 }
 
-# 'pricer.evo.' matches no real service (case-insensitively 'pricer.evo' alone would also
-# match the 'EvoService' name itself) -- only reachable via the discovered request type,
+# 'contoso.my.' matches no real service (case-insensitively 'contoso.myservice' alone
+# would also match the 'MyService' name itself) -- only reachable via the discovered request type,
 # proving discovery + wiring works and is gated on the 'describe' verb.
-$r = Get-Completion 'grpcurl -plaintext $myserver describe pricer.evo.'
-Assert (@($r.CompletionText) -join ',' -eq 'pricer.evo.dtoflow.,pricer.evo.dtos.') "'describe pricer.evo.' should narrow into both discovered-type package segments sharing that prefix"
+$r = Get-Completion 'grpcurl -plaintext $myserver describe contoso.my.'
+Assert (@($r.CompletionText) -join ',' -eq 'contoso.my.reqtypes.,contoso.my.restypes.') "'describe contoso.my.' should narrow into both discovered-type package segments sharing that prefix"
 
 # a method annotated with an option block (header ends in '{') must still contribute its
 # response type -- this was the actual bug: such lines silently failed to match before.
-$r = Get-Completion 'grpcurl -plaintext $myserver describe pricer.evo.dtos.'
-Assert (@($r.CompletionText) -join ',' -eq 'pricer.evo.dtos.canvasdesign.') "response type of an option-annotated rpc (header ending in '{') should still be discovered"
+$r = Get-Completion 'grpcurl -plaintext $myserver describe contoso.my.restypes.'
+Assert (@($r.CompletionText) -join ',' -eq 'contoso.my.restypes.widget.') "response type of an option-annotated rpc (header ending in '{') should still be discovered"
 
-$r = Get-Completion 'grpcurl -plaintext $myserver list pr'
-Assert (@($r.CompletionText) -join ',' -eq 'pricer.') "'list pr' should still narrow to the service segment only, ignoring describe-only types"
+$r = Get-Completion 'grpcurl -plaintext $myserver list co'
+Assert (@($r.CompletionText) -join ',' -eq 'contoso.') "'list co' should still narrow to the service segment only, ignoring describe-only types"
 
-$r = Get-Completion 'grpcurl -plaintext $myserver pr'
-Assert (@($r.CompletionText) -join ',' -eq 'pricer.') "no-verb 'pr' should still narrow to the service segment only, ignoring describe-only types"
+$r = Get-Completion 'grpcurl -plaintext $myserver co'
+Assert (@($r.CompletionText) -join ',' -eq 'contoso.') "no-verb 'co' should still narrow to the service segment only, ignoring describe-only types"
 
 # An exact type match must not attempt a bogus method-list call against a message type --
 # every describe/list call needed was already seeded above, so no new cache keys should appear.
 $keysBefore = & (Get-Module grpcurl-autocomplete) { @($script:ListCache.Keys) }
-Get-Completion 'grpcurl -plaintext $myserver describe pricer.evo.dtoflow.type.BatchReadDtosRequest' | Out-Null
+Get-Completion 'grpcurl -plaintext $myserver describe contoso.my.reqtypes.type.BatchReadItemsRequest' | Out-Null
 $keysAfter = & (Get-Module grpcurl-autocomplete) { @($script:ListCache.Keys) }
 Assert ((($keysAfter | Sort-Object) -join ',') -eq (($keysBefore | Sort-Object) -join ',')) "exact type match should add no new cache entries (no bogus list/describe call on a message type)"
 
