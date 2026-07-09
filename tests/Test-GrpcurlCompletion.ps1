@@ -81,6 +81,19 @@ Assert (@($r.CompletionText) -join ',' -eq 'pricer.EvoService.SayHello') "dot-fo
 $r = Get-Completion 'grpcurl -plaintext $myserver pricer.EvoService/'
 Assert ($r.CompletionText -contains 'pricer.EvoService/SayHello') "explicit slash-typed method completion should still work"
 
+# 'list' and 'describe' verbs are offered in the slot right after the address
+$r = Get-Completion 'grpcurl -plaintext $myserver '
+Assert ($r.CompletionText -contains 'list') "empty word after address should offer 'list'"
+Assert ($r.CompletionText -contains 'describe') "empty word after address should offer 'describe'"
+
+$r = Get-Completion 'grpcurl -plaintext $myserver l'
+Assert (@($r.CompletionText) -join ',' -eq 'list') "'l' should narrow verb completion to 'list' only"
+
+# once a verb is already typed, 'list'/'describe' should not be re-offered for the symbol slot
+$r = Get-Completion 'grpcurl -plaintext $myserver list pr'
+Assert (-not ($r.CompletionText -contains 'list')) "'list'/'describe' should not be re-offered once a verb is already typed"
+Assert (@($r.CompletionText) -join ',' -eq 'pricer.') "symbol narrowing after an explicit verb should still work"
+
 # Invoke-GrpcurlList against a refusing port returns @() within timeout, does not throw
 & (Get-Module grpcurl-autocomplete) {
     $result = Invoke-GrpcurlList -ConnectionArgs @('-plaintext', '127.0.0.1:1') -Service $null

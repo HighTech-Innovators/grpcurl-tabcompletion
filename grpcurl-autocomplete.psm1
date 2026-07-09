@@ -146,6 +146,7 @@ function Get-GrpcurlCompletion {
     $address = $null
     $connectionArgs = [System.Collections.Generic.List[string]]::new()
     $addressSeen = $false
+    $verb = $null
     $currentIndex = -1
 
     for ($i = 1; $i -lt $elements.Count; $i++) {
@@ -181,6 +182,9 @@ function Get-GrpcurlCompletion {
                 $address = [string]$value
                 $addressSeen = $true
             }
+        } elseif ($null -eq $verb) {
+            $stringAst = $el -as [System.Management.Automation.Language.StringConstantExpressionAst]
+            if ($stringAst) { $verb = $stringAst.Value }
         }
     }
 
@@ -201,6 +205,14 @@ function Get-GrpcurlCompletion {
     }
 
     $connectionArgs.Add($address)
+
+    # 'list'/'describe' only make sense in the verb slot, i.e. when nothing after
+    # the address has been typed yet -- not once a verb (or symbol) already has.
+    $verbCompletions = @(if ($null -eq $verb -and -not $current.Contains('/')) {
+        'list', 'describe' |
+            Where-Object { $_.StartsWith($current, [StringComparison]::OrdinalIgnoreCase) } |
+            ForEach-Object { [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_) }
+    })
 
     if ($current.Contains('/')) {
         $splitIndex = $current.LastIndexOf('/')
@@ -235,13 +247,13 @@ function Get-GrpcurlCompletion {
         $prefix = "$matchedService."
         $methods = Invoke-GrpcurlList -ConnectionArgs $connectionArgs -Service $matchedService |
             ForEach-Object { if ($_.StartsWith($prefix)) { $_.Substring($prefix.Length) } else { $_ } }
-        return $methods |
+        return $verbCompletions + @($methods |
             Where-Object { $_.StartsWith($methodPrefix, [StringComparison]::OrdinalIgnoreCase) } |
             Sort-Object |
             ForEach-Object {
                 $full = "$matchedService.$_"
                 [System.Management.Automation.CompletionResult]::new($full, $full, 'ParameterValue', $full)
-            }
+            })
     }
 
     # Otherwise, narrow the package/service hierarchy one dot-segment at a time,
@@ -258,11 +270,11 @@ function Get-GrpcurlCompletion {
     # Trailing '.' on partial segments already signals PSReadLine not to append a
     # space -- ParameterValue is enough; no need for ProviderContainer (that type
     # forces a path-separator character onto the text, hence the stray '\').
-    return $segments.Keys |
+    return $verbCompletions + @($segments.Keys |
         Sort-Object |
         ForEach-Object {
             [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_)
-        }
+        })
 }
 
 Register-ArgumentCompleter -Native -CommandName grpcurl -ScriptBlock {
