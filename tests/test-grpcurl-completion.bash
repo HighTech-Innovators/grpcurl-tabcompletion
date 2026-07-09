@@ -96,6 +96,17 @@ done
 assert $(( ! found_list )) "empty word after address should offer 'list'"
 assert $(( ! found_describe )) "empty word after address should offer 'describe'"
 
+# COMP_WORDBREAKS must exclude '.', '/', and ':' -- bash uses it to split every word in
+# COMP_WORDS, not just the current one. Leaving ':' in would split a host:port address
+# into two COMP_WORDS entries, and the second fragment (e.g. '443') would get mistaken
+# for the verb by the parse loop below, silently suppressing 'list'/'describe'.
+assert $([[ $COMP_WORDBREAKS != *[.\/:]* ]]; echo $?) "COMP_WORDBREAKS must not contain '.', '/', or ':'"
+
+# Regression: a real host:port address (with embedded dots too) must not be mistaken
+# for a verb, which would suppress the list/describe verb-slot offer.
+get_completion 'grpcurl myhost.example.com:443 li'
+assert $([[ $REPLY_JOINED == 'list' ]]; echo $?) "'li' after a colon-containing address should still offer 'list'"
+
 get_completion 'grpcurl -plaintext $myserver l'
 assert $([[ $REPLY_JOINED == 'list' ]]; echo $?) "'l' should narrow verb completion to 'list' only"
 

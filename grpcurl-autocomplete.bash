@@ -321,5 +321,5 @@ _grpcurl_complete() {
     IFS=$'\n' COMPREPLY=("${verb_completions[@]}" $(sort <<< "${!segments[*]}"))
 }
 
-COMP_WORDBREAKS=${COMP_WORDBREAKS//[.\/]/}
+COMP_WORDBREAKS=${COMP_WORDBREAKS//[.\/:]/}
 complete -F _grpcurl_complete grpcurl
