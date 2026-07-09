@@ -155,6 +155,22 @@ get_completion 'grpcurl -plaintext $myserver describe contoso.my.reqtypes.type.B
 keys_after=$(printf '%s\n' "${!GRPCURL_CACHE_TIME[@]}" | sort)
 assert $([[ $keys_before == "$keys_after" ]]; echo $?) 'exact type match should add no new cache entries (no bogus list/describe call on a message type)'
 
+# Regression: a type only reachable as a *field* of another message -- never as any
+# RPC's direct request/response type -- must still be discovered. Mirrors a real
+# schema shape: TopService's RPC references TopMessage directly (round 0), but
+# TopMessage's own describe output (parsed in round 1) is what reveals a nested
+# submessage field referencing 'field.shared.Deep', which is otherwise unreachable.
+fieldserver='fieldhost:1234'
+GRPCURL_CACHE_TIME['-plaintext|fieldhost:1234|list']=$SECONDS
+GRPCURL_CACHE_ITEMS['-plaintext|fieldhost:1234|list']=$'field.TopService'
+GRPCURL_CACHE_TIME['-plaintext|fieldhost:1234|describe|field.TopService']=$SECONDS
+GRPCURL_CACHE_ITEMS['-plaintext|fieldhost:1234|describe|field.TopService']=$'field.TopService is a service:\nservice TopService {\nrpc Get ( .field.TopMessage ) returns ( .field.TopMessage );\n}'
+GRPCURL_CACHE_TIME['-plaintext|fieldhost:1234|describe|field.TopMessage']=$SECONDS
+GRPCURL_CACHE_ITEMS['-plaintext|fieldhost:1234|describe|field.TopMessage']=$'field.TopMessage is a message:\nmessage TopMessage {\n  string id = 1;\n  .field.TopMessage.Nested nested = 2;\n  message Nested {\n    .field.shared.Deep deep = 1;\n  }\n}'
+
+get_completion 'grpcurl -plaintext $fieldserver describe field.sh'
+assert $([[ $REPLY_JOINED == 'field.shared.' ]]; echo $?) "a type reachable only as a nested field ('field.shared.Deep', inside TopMessage.Nested) must be discovered via the field-type crawl, not just RPC-signature types"
+
 # _grpcurl_list against a refusing port returns nothing within the poll budget, does not hang
 declare -a refuse_conn=('-plaintext' '127.0.0.1:1')
 result=$(_grpcurl_list refuse_conn '')

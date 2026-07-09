@@ -42,13 +42,20 @@ declare -A GRPCURL_FLAGS=(
 )
 
 # ponytail: 300s TTL, no eviction -- matches the PowerShell version's tradeoff.
-declare -A GRPCURL_CACHE_TIME
-declare -A GRPCURL_CACHE_ITEMS
+declare -A GRPCURL_CACHE_TIME=()
+declare -A GRPCURL_CACHE_ITEMS=()
 
 # Matches a full 'rpc Name ( [stream] .Type ) returns ( [stream] .Type )' header line
 # from `describe <service>` output. See grpcurl-autocomplete.psm1 for the rationale
 # (scalar types never match; both ';'- and '{'-terminated headers must match).
 GRPCURL_RPC_TYPE_PATTERN='^rpc[[:space:]]+[^[:space:]]+[[:space:]]*\([[:space:]]*(stream[[:space:]]+)?\.([^[:space:])]+)[[:space:]]*\)[[:space:]]*returns[[:space:]]*\([[:space:]]*(stream[[:space:]]+)?\.([^[:space:])]+)[[:space:]]*\)[[:space:]]*(;|\{)[[:space:]]*$'
+
+# Matches a message field line referencing another message/enum type, e.g.
+# '  .pkg.Type field_name = 3;' or '  repeated .pkg.Type field_name = 5;'.
+# A type is often only reachable this way -- as a field of another message --
+# never as any RPC's direct request/response type, so this is a second, distinct
+# discovery source from GRPCURL_RPC_TYPE_PATTERN, not a variant of it.
+GRPCURL_FIELD_TYPE_PATTERN='^[[:space:]]*(repeated[[:space:]]+)?\.([^[:space:])]+)[[:space:]]+[A-Za-z_][A-Za-z0-9_]*[[:space:]]*=[[:space:]]*[0-9]+;[[:space:]]*$'
 
 # Resolves $VAR / ${VAR} references in a word to the shell variable's current value.
 # Refuses to touch $(...) / `...` -- never eval the word, since that would execute
@@ -115,27 +122,32 @@ _grpcurl_list() {
     [[ -n $items ]] && printf '%s\n' "$items"
 }
 
-# Discovers standalone message/enum types referenced by each service's own RPC
-# signatures (one hop only), by running `describe <svc>` for every known service
-# concurrently and sharing a single ~2s poll budget across all of them.
-_grpcurl_referenced_types() {
-    local -n conn_args=$1
-    local -n svc_list_ref=$2
-    local -A pending_pid pending_tmp pending_key
-    local svc cache_key tmp
+# Runs `describe <name>` for every name in $2 not already cached, concurrently,
+# sharing a single ~2s poll budget across all of them, and writes each result into
+# GRPCURL_CACHE_TIME/GRPCURL_CACHE_ITEMS under its own 'describe|<name>' key.
+_grpcurl_describe_batch() {
+    local -n __db_conn=$1
+    local -n __db_names=$2
+    # `=()` initializers are required here, not stylistic -- under `set -u`, an
+    # associative array declared via `local -A x` with no elements yet assigned
+    # reads as unbound when its length is checked (bash's local-var "set" tracking
+    # lags array creation until the first element write).
+    local -A pending_pid=() pending_tmp=() pending_key=()
+    local name cache_key tmp
 
-    for svc in "${svc_list_ref[@]}"; do
-        printf -v cache_key '%s|' "${conn_args[@]}" describe "$svc"
+    for name in "${__db_names[@]}"; do
+        printf -v cache_key '%s|' "${__db_conn[@]}" describe "$name"
         cache_key=${cache_key%|}
         if [[ -n ${GRPCURL_CACHE_TIME[$cache_key]+x} ]] && (( SECONDS - GRPCURL_CACHE_TIME[$cache_key] < 300 )); then
             continue
         fi
         tmp=$(mktemp)
-        grpcurl "${conn_args[@]}" describe "$svc" >"$tmp" 2>/dev/null &
-        pending_pid[$svc]=$!
-        pending_tmp[$svc]=$tmp
-        pending_key[$svc]=$cache_key
+        grpcurl "${__db_conn[@]}" describe "$name" >"$tmp" 2>/dev/null &
+        pending_pid[$name]=$!
+        pending_tmp[$name]=$tmp
+        pending_key[$name]=$cache_key
     done
+    (( ${#pending_pid[@]} == 0 )) && return
 
     # ponytail: poll-count deadline (20 x 100ms) instead of a wall-clock deadline --
     # avoids a GNU-timeout/date-precision dependency; swap for EPOCHREALTIME if
@@ -143,46 +155,85 @@ _grpcurl_referenced_types() {
     local tick all_done
     for ((tick = 0; tick < 20; tick++)); do
         all_done=1
-        for svc in "${!pending_pid[@]}"; do
-            kill -0 "${pending_pid[$svc]}" 2>/dev/null && all_done=0
+        for name in "${!pending_pid[@]}"; do
+            kill -0 "${pending_pid[$name]}" 2>/dev/null && all_done=0
         done
         (( all_done )) && break
         sleep 0.1
     done
 
     local items
-    for svc in "${!pending_pid[@]}"; do
+    for name in "${!pending_pid[@]}"; do
         items=''
-        if kill -0 "${pending_pid[$svc]}" 2>/dev/null; then
-            kill "${pending_pid[$svc]}" 2>/dev/null
-            wait "${pending_pid[$svc]}" 2>/dev/null
+        if kill -0 "${pending_pid[$name]}" 2>/dev/null; then
+            kill "${pending_pid[$name]}" 2>/dev/null
+            wait "${pending_pid[$name]}" 2>/dev/null
         else
-            wait "${pending_pid[$svc]}" 2>/dev/null
+            wait "${pending_pid[$name]}" 2>/dev/null
             if [[ $? -eq 0 ]]; then
-                items=$(sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' "${pending_tmp[$svc]}" | grep -v '^$')
+                items=$(sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' "${pending_tmp[$name]}" | grep -v '^$')
             fi
         fi
-        rm -f "${pending_tmp[$svc]}"
-        GRPCURL_CACHE_TIME[${pending_key[$svc]}]=$SECONDS
-        GRPCURL_CACHE_ITEMS[${pending_key[$svc]}]=$items
+        rm -f "${pending_tmp[$name]}"
+        GRPCURL_CACHE_TIME[${pending_key[$name]}]=$SECONDS
+        GRPCURL_CACHE_ITEMS[${pending_key[$name]}]=$items
     done
+}
 
-    local -A types=()
-    local line t1 t2 cache_key_lookup
+# Discovers standalone message/enum types reachable from the known services: first
+# each service's own RPC request/response types, then -- since a type is often only
+# reachable as a field of another message, never as any RPC's direct request/response
+# (e.g. a shared type referenced only from within a nested submessage) -- each newly
+# discovered type's own field types, repeated until a round finds nothing new.
+_grpcurl_referenced_types() {
+    local -n conn_args=$1
+    local -n svc_list_ref=$2
+    local -A discovered=()
+    local svc cache_key line t1 t2 t
+
+    _grpcurl_describe_batch conn_args svc_list_ref
+    local -a frontier=()
     for svc in "${svc_list_ref[@]}"; do
-        printf -v cache_key_lookup '%s|' "${conn_args[@]}" describe "$svc"
-        cache_key_lookup=${cache_key_lookup%|}
+        printf -v cache_key '%s|' "${conn_args[@]}" describe "$svc"
+        cache_key=${cache_key%|}
         while IFS= read -r line; do
             if [[ $line =~ $GRPCURL_RPC_TYPE_PATTERN ]]; then
                 t1=${BASH_REMATCH[2]#.}
                 t2=${BASH_REMATCH[4]#.}
-                types[$t1]=1
-                types[$t2]=1
+                for t in "$t1" "$t2"; do
+                    if [[ -z ${discovered[$t]+x} ]]; then
+                        discovered[$t]=1
+                        frontier+=("$t")
+                    fi
+                done
             fi
-        done <<< "${GRPCURL_CACHE_ITEMS[$cache_key_lookup]}"
+        done <<< "${GRPCURL_CACHE_ITEMS[$cache_key]}"
     done
 
-    (( ${#types[@]} > 0 )) && printf '%s\n' "${!types[@]}"
+    # ponytail: bounded to 6 rounds so a pathologically deep/wide message graph can't
+    # hang Tab indefinitely -- each round is itself bounded to ~2s and cached for
+    # 300s after, so a repeat Tab press (or a deeper describe) stays fast.
+    local round
+    for ((round = 0; round < 6 && ${#frontier[@]} > 0; round++)); do
+        local -a next_frontier=()
+        _grpcurl_describe_batch conn_args frontier
+        for svc in "${frontier[@]}"; do
+            printf -v cache_key '%s|' "${conn_args[@]}" describe "$svc"
+            cache_key=${cache_key%|}
+            while IFS= read -r line; do
+                if [[ $line =~ $GRPCURL_FIELD_TYPE_PATTERN ]]; then
+                    t=${BASH_REMATCH[2]}
+                    if [[ -z ${discovered[$t]+x} ]]; then
+                        discovered[$t]=1
+                        next_frontier+=("$t")
+                    fi
+                fi
+            done <<< "${GRPCURL_CACHE_ITEMS[$cache_key]}"
+        done
+        frontier=("${next_frontier[@]}")
+    done
+
+    (( ${#discovered[@]} > 0 )) && printf '%s\n' "${!discovered[@]}"
 }
 
 # Registered with `complete -o nospace` so bash never auto-appends a trailing

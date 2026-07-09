@@ -142,24 +142,31 @@ function Invoke-GrpcurlList {
 # REST-mapped services annotate every method with google.api.http) -- both must match.
 $script:GrpcurlRpcTypePattern = '^rpc\s+\S+\s*\(\s*(?:stream\s+)?(\.\S+?)\s*\)\s*returns\s*\(\s*(?:stream\s+)?(\.\S+?)\s*\)\s*(?:;|\{)\s*$'
 
-function Get-GrpcurlReferencedTypes {
+# Matches a message field line referencing another message/enum type, e.g.
+# '  .pkg.Type field_name = 3;' or '  repeated .pkg.Type field_name = 5;'. A type is
+# often only reachable this way -- as a field of another message -- never as any
+# RPC's direct request/response type, so this is a second, distinct discovery source
+# from GrpcurlRpcTypePattern, not a variant of it.
+$script:GrpcurlFieldTypePattern = '^\s*(?:repeated\s+)?\.(\S+)\s+[A-Za-z_]\w*\s*=\s*\d+;\s*$'
+
+# Runs `describe <name>` for every name in $Names not already freshly cached,
+# concurrently, sharing a single ~2s poll budget across all of them, and writes each
+# result into $script:ListCache under its own 'describe|<name>' key. Describing N
+# names is inherently N process spawns (grpcurl has no "describe everything" mode) --
+# run them concurrently instead of one at a time, or wall-clock time is O(N).
+function Invoke-GrpcurlDescribeBatch {
     param(
         [string[]]$ConnectionArgs,
-        [string[]]$Services
+        [string[]]$Names
     )
 
-    # Describing every known service is inherently N process spawns (grpcurl has no
-    # "describe everything" mode) -- run them concurrently instead of one at a time, or
-    # this crawl's wall-clock time is O(services), which is unusably slow past a handful.
     $pending = [System.Collections.Generic.List[object]]::new()
-    $results = @{}
 
-    foreach ($svc in $Services) {
-        $argv = @($ConnectionArgs) + @('describe', $svc)
+    foreach ($name in $Names) {
+        $argv = @($ConnectionArgs) + @('describe', $name)
         $cacheKey = "$($argv -join '|')"
         $cached = $script:ListCache[$cacheKey]
         if ($cached -and ([DateTime]::UtcNow - $cached.Time).TotalSeconds -lt 300) {
-            $results[$svc] = $cached.Items
             continue
         }
 
@@ -174,19 +181,18 @@ function Get-GrpcurlReferencedTypes {
             $proc.StartInfo = $psi
             [void]$proc.Start()
             $pending.Add([pscustomobject]@{
-                Service  = $svc
                 CacheKey = $cacheKey
                 Process  = $proc
                 Stdout   = $proc.StandardOutput.ReadToEndAsync()
                 Stderr   = $proc.StandardError.ReadToEndAsync()
             })
         } catch {
-            $results[$svc] = @()
+            $script:ListCache[$cacheKey] = @{ Time = [DateTime]::UtcNow; Items = @() }
         }
     }
 
     # Shared deadline, not one timeout per process -- since they all started together,
-    # total wall time is bounded by ~2s regardless of how many services are pending.
+    # total wall time is bounded by ~2s regardless of how many names are pending.
     $deadline = [DateTime]::UtcNow.AddMilliseconds(2000)
     foreach ($p in $pending) {
         $remaining = [Math]::Max(0, [int]($deadline - [DateTime]::UtcNow).TotalMilliseconds)
@@ -201,18 +207,54 @@ function Get-GrpcurlReferencedTypes {
             }
         } catch {}
         $script:ListCache[$p.CacheKey] = @{ Time = [DateTime]::UtcNow; Items = $items }
-        $results[$p.Service] = $items
     }
+}
+
+# Discovers standalone message/enum types reachable from the known services: first
+# each service's own RPC request/response types, then -- since a type is often only
+# reachable as a field of another message, never as any RPC's direct request/response
+# (e.g. a shared type referenced only from within a nested submessage) -- each newly
+# discovered type's own field types, repeated until a round finds nothing new.
+function Get-GrpcurlReferencedTypes {
+    param(
+        [string[]]$ConnectionArgs,
+        [string[]]$Services
+    )
+
+    Invoke-GrpcurlDescribeBatch -ConnectionArgs $ConnectionArgs -Names $Services
 
     $types = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    $frontier = [System.Collections.Generic.List[string]]::new()
     foreach ($svc in $Services) {
-        foreach ($line in $results[$svc]) {
+        $argv = @($ConnectionArgs) + @('describe', $svc)
+        $cacheKey = "$($argv -join '|')"
+        foreach ($line in $script:ListCache[$cacheKey].Items) {
             if ($line -match $script:GrpcurlRpcTypePattern) {
-                [void]$types.Add($Matches[1].TrimStart('.'))
-                [void]$types.Add($Matches[2].TrimStart('.'))
+                foreach ($t in @($Matches[1].TrimStart('.'), $Matches[2].TrimStart('.'))) {
+                    if ($types.Add($t)) { $frontier.Add($t) }
+                }
             }
         }
     }
+
+    # ponytail: bounded to 6 rounds so a pathologically deep/wide message graph can't
+    # hang Tab indefinitely -- each round is itself bounded to ~2s and cached for
+    # 300s after, so a repeat Tab press (or a deeper describe) stays fast.
+    for ($round = 0; $round -lt 6 -and $frontier.Count -gt 0; $round++) {
+        $current = $frontier
+        $frontier = [System.Collections.Generic.List[string]]::new()
+        Invoke-GrpcurlDescribeBatch -ConnectionArgs $ConnectionArgs -Names $current
+        foreach ($svc in $current) {
+            $argv = @($ConnectionArgs) + @('describe', $svc)
+            $cacheKey = "$($argv -join '|')"
+            foreach ($line in $script:ListCache[$cacheKey].Items) {
+                if ($line -match $script:GrpcurlFieldTypePattern) {
+                    if ($types.Add($Matches[1])) { $frontier.Add($Matches[1]) }
+                }
+            }
+        }
+    }
+
     return @($types)
 }
 
@@ -339,12 +381,15 @@ function Get-GrpcurlCompletion {
     }
 
     # Under 'describe', standalone message/enum types are valid completion targets too --
-    # discover them from each known service's own RPC signatures (one hop only: the
-    # request/response types of that service's methods, not recursively into their fields).
+    # discover them from each known service's own RPC signatures, then follow their
+    # field types recursively (see Get-GrpcurlReferencedTypes).
     $narrowCandidates = $services
     if ($verb -ieq 'describe') {
         $discoveredTypes = Get-GrpcurlReferencedTypes -ConnectionArgs $connectionArgs -Services $services
-        $narrowCandidates = @($services + $discoveredTypes | Select-Object -Unique)
+        # @() each operand individually before '+' -- a single-service/-type result
+        # collapses to a bare string on the pipeline, and string + array concatenates
+        # as text instead of combining elements.
+        $narrowCandidates = @(@($services) + @($discoveredTypes) | Select-Object -Unique)
     }
 
     # Otherwise, narrow the package/service hierarchy one dot-segment at a time,

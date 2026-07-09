@@ -146,6 +146,43 @@ Get-Completion 'grpcurl -plaintext $myserver describe contoso.my.reqtypes.type.B
 $keysAfter = & (Get-Module grpcurl-autocomplete) { @($script:ListCache.Keys) }
 Assert ((($keysAfter | Sort-Object) -join ',') -eq (($keysBefore | Sort-Object) -join ',')) "exact type match should add no new cache entries (no bogus list/describe call on a message type)"
 
+# Regression: a type only reachable as a *field* of another message -- never as any
+# RPC's direct request/response type -- must still be discovered. Mirrors a real
+# schema shape: TopService's RPC references TopMessage directly (round 0), but
+# TopMessage's own describe output (parsed in round 1) is what reveals a nested
+# submessage field referencing 'field.shared.Deep', which is otherwise unreachable.
+$fieldserver = 'fieldhost:1234'
+& (Get-Module grpcurl-autocomplete) {
+    $script:ListCache['-plaintext|fieldhost:1234|list'] = @{
+        Time  = [DateTime]::UtcNow
+        Items = @('field.TopService')
+    }
+    $script:ListCache['-plaintext|fieldhost:1234|describe|field.TopService'] = @{
+        Time  = [DateTime]::UtcNow
+        Items = @(
+            'field.TopService is a service:',
+            'service TopService {',
+            'rpc Get ( .field.TopMessage ) returns ( .field.TopMessage );',
+            '}'
+        )
+    }
+    $script:ListCache['-plaintext|fieldhost:1234|describe|field.TopMessage'] = @{
+        Time  = [DateTime]::UtcNow
+        Items = @(
+            'field.TopMessage is a message:',
+            'message TopMessage {',
+            '  string id = 1;',
+            '  .field.TopMessage.Nested nested = 2;',
+            '  message Nested {',
+            '    .field.shared.Deep deep = 1;',
+            '  }',
+            '}'
+        )
+    }
+}
+$r = Get-Completion 'grpcurl -plaintext $fieldserver describe field.sh'
+Assert (@($r.CompletionText) -join ',' -eq 'field.shared.') "a type reachable only as a nested field ('field.shared.Deep', inside TopMessage.Nested) must be discovered via the field-type crawl, not just RPC-signature types"
+
 # Invoke-GrpcurlList against a refusing port returns @() within timeout, does not throw
 & (Get-Module grpcurl-autocomplete) {
     $result = Invoke-GrpcurlList -ConnectionArgs @('-plaintext', '127.0.0.1:1') -Service $null
