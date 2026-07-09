@@ -185,6 +185,21 @@ _grpcurl_referenced_types() {
     (( ${#types[@]} > 0 )) && printf '%s\n' "${!types[@]}"
 }
 
+# Registered with `complete -o nospace` so bash never auto-appends a trailing
+# space -- we add it ourselves, except after a partial dot-segment (ends in '.'),
+# so the user can keep tabbing through 'contoso.' -> 'contoso.MyService' without
+# having to backspace over an unwanted space first.
+_grpcurl_finish() {
+    local e
+    for e in "$@"; do
+        if [[ $e == *. ]]; then
+            COMPREPLY+=("$e")
+        else
+            COMPREPLY+=("$e ")
+        fi
+    done
+}
+
 _grpcurl_complete() {
     COMPREPLY=()
     local cur=${COMP_WORDS[COMP_CWORD]}
@@ -213,11 +228,13 @@ _grpcurl_complete() {
     done
 
     if [[ $cur == -* ]]; then
+        local -a flags=()
         local flag
         for flag in "${!GRPCURL_FLAGS[@]}"; do
-            [[ $flag == "$cur"* ]] && COMPREPLY+=("$flag")
+            [[ $flag == "$cur"* ]] && flags+=("$flag")
         done
-        IFS=$'\n' COMPREPLY=($(sort <<< "${COMPREPLY[*]}"))
+        IFS=$'\n' flags=($(sort <<< "${flags[*]}"))
+        _grpcurl_finish "${flags[@]}"
         return
     fi
 
@@ -247,7 +264,8 @@ _grpcurl_complete() {
             [[ $m == "$service."* ]] && m=${m#"$service".}
             [[ $m == "$method_prefix"* ]] && methods+=("$service/$m")
         done < <(_grpcurl_list connection_args "$service")
-        IFS=$'\n' COMPREPLY=($(sort <<< "${methods[*]}"))
+        IFS=$'\n' methods=($(sort <<< "${methods[*]}"))
+        _grpcurl_finish "${methods[@]}"
         return
     fi
 
@@ -278,7 +296,8 @@ _grpcurl_complete() {
             [[ $m == "$matched_service."* ]] && m=${m#"$matched_service".}
             [[ ${m,,} == "${method_prefix,,}"* ]] && methods+=("$matched_service.$m")
         done < <(_grpcurl_list connection_args "$matched_service")
-        IFS=$'\n' COMPREPLY=("${verb_completions[@]}" $(sort <<< "${methods[*]}"))
+        IFS=$'\n' methods=($(sort <<< "${methods[*]}"))
+        _grpcurl_finish "${verb_completions[@]}" "${methods[@]}"
         return
     fi
 
@@ -318,8 +337,10 @@ _grpcurl_complete() {
         segments[$segment]=1
     done
 
-    IFS=$'\n' COMPREPLY=("${verb_completions[@]}" $(sort <<< "${!segments[*]}"))
+    local -a sorted_segments=()
+    IFS=$'\n' sorted_segments=($(sort <<< "${!segments[*]}"))
+    _grpcurl_finish "${verb_completions[@]}" "${sorted_segments[@]}"
 }
 
 COMP_WORDBREAKS=${COMP_WORDBREAKS//[.\/:]/}
-complete -F _grpcurl_complete grpcurl
+complete -o nospace -F _grpcurl_complete grpcurl

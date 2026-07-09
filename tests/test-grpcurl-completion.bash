@@ -31,8 +31,8 @@ get_completion() {
 get_completion 'grpcurl -pl'
 found_plaintext=0 found_insecure=0
 for r in "${COMPREPLY[@]}"; do
-    [[ $r == '-plaintext' ]] && found_plaintext=1
-    [[ $r == '-insecure' ]] && found_insecure=1
+    [[ $r == '-plaintext ' ]] && found_plaintext=1
+    [[ $r == '-insecure ' ]] && found_insecure=1
 done
 assert $(( ! found_plaintext )) "'-pl' should suggest -plaintext"
 assert $found_insecure "'-pl' should not suggest -insecure"
@@ -65,33 +65,38 @@ GRPCURL_CACHE_ITEMS['-plaintext|localhost:9999|list|contoso.MyService']=$'contos
 
 get_completion 'grpcurl -plaintext $myserver co'
 assert $([[ $REPLY_JOINED == 'contoso.' ]]; echo $?) "'co' should narrow to the single shared segment 'contoso.'"
+# Regression: a partial dot-segment must never get a trailing space -- that forced a
+# backspace before every further Tab. The completer is registered with `-o nospace` and
+# _grpcurl_finish only appends a space to non-dot-terminated completions; assert directly
+# on the raw string (not a *-glob) so a reintroduced trailing space actually fails this.
+assert $([[ ${COMPREPLY[0]} == 'contoso.' ]]; echo $?) "narrowed segment 'contoso.' must not have a trailing space"
 
 get_completion 'grpcurl -plaintext $myserver contoso.m'
-assert $([[ $REPLY_JOINED == 'contoso.MyService' ]]; echo $?) "'contoso.m' (case-insensitive) should complete to the leaf 'contoso.MyService'"
+assert $([[ $REPLY_JOINED == 'contoso.MyService ' ]]; echo $?) "'contoso.m' (case-insensitive) should complete to the leaf 'contoso.MyService', with a trailing space (it's a full name, not a partial segment)"
 
 get_completion 'grpcurl -plaintext $myserver contoso.MyService'
 found_hello=0 found_goodbye=0
 for r in "${COMPREPLY[@]}"; do
-    [[ $r == 'contoso.MyService.SayHello' ]] && found_hello=1
-    [[ $r == 'contoso.MyService.SayGoodbye' ]] && found_goodbye=1
+    [[ $r == 'contoso.MyService.SayHello ' ]] && found_hello=1
+    [[ $r == 'contoso.MyService.SayGoodbye ' ]] && found_goodbye=1
 done
 assert $(( ! found_hello )) 'exact service match should auto-continue into dot-form methods'
 assert $(( ! found_goodbye )) 'exact service match should list all methods when no method prefix given'
 
 get_completion 'grpcurl -plaintext $myserver contoso.myservice.sayh'
-assert $([[ $REPLY_JOINED == 'contoso.MyService.SayHello' ]]; echo $?) 'dot-form method typing (case-insensitive) should narrow to the matching method, using real casing'
+assert $([[ $REPLY_JOINED == 'contoso.MyService.SayHello ' ]]; echo $?) 'dot-form method typing (case-insensitive) should narrow to the matching method, using real casing'
 
 get_completion 'grpcurl -plaintext $myserver contoso.MyService/'
 found=0
-for r in "${COMPREPLY[@]}"; do [[ $r == 'contoso.MyService/SayHello' ]] && found=1; done
+for r in "${COMPREPLY[@]}"; do [[ $r == 'contoso.MyService/SayHello ' ]] && found=1; done
 assert $(( ! found )) 'explicit slash-typed method completion should still work'
 
 # 'list' and 'describe' verbs are offered in the slot right after the address
 get_completion 'grpcurl -plaintext $myserver '
 found_list=0 found_describe=0
 for r in "${COMPREPLY[@]}"; do
-    [[ $r == 'list' ]] && found_list=1
-    [[ $r == 'describe' ]] && found_describe=1
+    [[ $r == 'list ' ]] && found_list=1
+    [[ $r == 'describe ' ]] && found_describe=1
 done
 assert $(( ! found_list )) "empty word after address should offer 'list'"
 assert $(( ! found_describe )) "empty word after address should offer 'describe'"
@@ -105,15 +110,15 @@ assert $([[ $COMP_WORDBREAKS != *[.\/:]* ]]; echo $?) "COMP_WORDBREAKS must not 
 # Regression: a real host:port address (with embedded dots too) must not be mistaken
 # for a verb, which would suppress the list/describe verb-slot offer.
 get_completion 'grpcurl myhost.example.com:443 li'
-assert $([[ $REPLY_JOINED == 'list' ]]; echo $?) "'li' after a colon-containing address should still offer 'list'"
+assert $([[ $REPLY_JOINED == 'list ' ]]; echo $?) "'li' after a colon-containing address should still offer 'list'"
 
 get_completion 'grpcurl -plaintext $myserver l'
-assert $([[ $REPLY_JOINED == 'list' ]]; echo $?) "'l' should narrow verb completion to 'list' only"
+assert $([[ $REPLY_JOINED == 'list ' ]]; echo $?) "'l' should narrow verb completion to 'list' only"
 
 # once a verb is already typed, 'list'/'describe' should not be re-offered for the symbol slot
 get_completion 'grpcurl -plaintext $myserver list co'
 found_list=0
-for r in "${COMPREPLY[@]}"; do [[ $r == 'list' ]] && found_list=1; done
+for r in "${COMPREPLY[@]}"; do [[ $r == 'list ' ]] && found_list=1; done
 assert $found_list "'list'/'describe' should not be re-offered once a verb is already typed"
 assert $([[ $REPLY_JOINED == 'contoso.' ]]; echo $?) 'symbol narrowing after an explicit verb should still work'
 
