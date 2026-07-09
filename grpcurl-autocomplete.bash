@@ -210,11 +210,15 @@ _grpcurl_referenced_types() {
         done <<< "${GRPCURL_CACHE_ITEMS[$cache_key]}"
     done
 
-    # ponytail: bounded to 6 rounds so a pathologically deep/wide message graph can't
-    # hang Tab indefinitely -- each round is itself bounded to ~2s and cached for
-    # 300s after, so a repeat Tab press (or a deeper describe) stays fast.
+    # ponytail: extra rounds share a single ~2s budget (deadline, not per-round), plus
+    # a 4-round hard cap -- giving each round its own full 2s made worst case scale as
+    # rounds x 2s (up to ~12s and felt "so slow" in practice). A slow/hanging network
+    # call still costs its round the full budget, but that can now only happen once,
+    # not once per round. Results are cached for 300s, so a repeat Tab press, or a
+    # deeper describe reusing already-crawled types, stays fast regardless.
+    local extra_rounds_deadline=$((SECONDS + 2))
     local round
-    for ((round = 0; round < 6 && ${#frontier[@]} > 0; round++)); do
+    for ((round = 0; round < 4 && ${#frontier[@]} > 0 && SECONDS < extra_rounds_deadline; round++)); do
         local -a next_frontier=()
         _grpcurl_describe_batch conn_args frontier
         for svc in "${frontier[@]}"; do
