@@ -171,6 +171,26 @@ GRPCURL_CACHE_ITEMS['-plaintext|fieldhost:1234|describe|field.TopMessage']=$'fie
 get_completion 'grpcurl -plaintext $fieldserver describe field.sh'
 assert $([[ $REPLY_JOINED == 'field.shared.' ]]; echo $?) "a type reachable only as a nested field ('field.shared.Deep', inside TopMessage.Nested) must be discovered via the field-type crawl, not just RPC-signature types"
 
+# Regression: the discovered-types crawl's own result must be cached too, not just
+# each underlying describe call -- otherwise every keystroke re-walks every type
+# through both regexes even when every describe call is already a cache hit (the
+# actual reported slowness, confirmed CPU-bound since it persisted against a
+# near-zero-latency LAN server). Seed ONLY the outer types-cache entry, with no
+# per-service describe cache entries at all, and confirm no describe cache keys
+# appear afterward -- proving the crawl was skipped entirely, not just individually
+# cached call-by-call.
+cachedserver='cachedhost:9999'
+GRPCURL_CACHE_TIME['-plaintext|cachedhost:9999|list']=$SECONDS
+GRPCURL_CACHE_ITEMS['-plaintext|cachedhost:9999|list']=$'cached.Svc'
+GRPCURL_CACHE_TIME['types|-plaintext cachedhost:9999|cached.Svc']=$SECONDS
+GRPCURL_CACHE_ITEMS['types|-plaintext cachedhost:9999|cached.Svc']=$'cached.PreDiscoveredType'
+
+keys_before=$(printf '%s\n' "${!GRPCURL_CACHE_TIME[@]}" | sort)
+get_completion 'grpcurl -plaintext $cachedserver describe cached.Pre'
+keys_after=$(printf '%s\n' "${!GRPCURL_CACHE_TIME[@]}" | sort)
+assert $([[ $REPLY_JOINED == 'cached.PreDiscoveredType ' ]]; echo $?) 'a warm discovered-types cache entry should be used directly'
+assert $([[ $keys_before == "$keys_after" ]]; echo $?) 'a warm discovered-types cache entry must skip the crawl entirely -- no new describe cache keys should appear'
+
 # _grpcurl_list against a refusing port returns nothing within the poll budget, does not hang
 declare -a refuse_conn=('-plaintext' '127.0.0.1:1')
 result=$(_grpcurl_list refuse_conn '')

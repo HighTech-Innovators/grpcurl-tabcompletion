@@ -191,6 +191,20 @@ _grpcurl_referenced_types() {
     local -A discovered=()
     local svc cache_key line t1 t2 t
 
+    # Cache the crawl's own OUTPUT, not just the describe calls it depends on -- every
+    # round re-walks every discovered type's cached lines through two regexes, which is
+    # cheap once but adds up fast in bash's interpreted `[[ =~ ]]` when replayed on every
+    # keystroke of a symbol (typing 'd', 'dt', 'dto', ... each re-triggers the full
+    # crawl even though every underlying describe call is already a cache hit). This
+    # was the actual bottleneck -- confirmed by it staying slow even against a
+    # near-zero-latency LAN server, where the network portion above is already fast.
+    local types_cache_key
+    printf -v types_cache_key 'types|%s|%s' "${conn_args[*]}" "${svc_list_ref[*]}"
+    if [[ -n ${GRPCURL_CACHE_TIME[$types_cache_key]+x} ]] && (( SECONDS - GRPCURL_CACHE_TIME[$types_cache_key] < 300 )); then
+        [[ -n ${GRPCURL_CACHE_ITEMS[$types_cache_key]} ]] && printf '%s\n' "${GRPCURL_CACHE_ITEMS[$types_cache_key]}"
+        return
+    fi
+
     _grpcurl_describe_batch conn_args svc_list_ref
     local -a frontier=()
     for svc in "${svc_list_ref[@]}"; do
@@ -237,7 +251,11 @@ _grpcurl_referenced_types() {
         frontier=("${next_frontier[@]}")
     done
 
-    (( ${#discovered[@]} > 0 )) && printf '%s\n' "${!discovered[@]}"
+    local result=''
+    (( ${#discovered[@]} > 0 )) && result=$(printf '%s\n' "${!discovered[@]}")
+    GRPCURL_CACHE_TIME[$types_cache_key]=$SECONDS
+    GRPCURL_CACHE_ITEMS[$types_cache_key]=$result
+    [[ -n $result ]] && printf '%s\n' "$result"
 }
 
 # Registered with `complete -o nospace` so bash never auto-appends a trailing
